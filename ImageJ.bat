@@ -1,6 +1,8 @@
 @echo off
 setlocal
 set "IJ_DIR=%~dp0"
+cd /d "%IJ_DIR%"
+
 if exist "C:\Program Files\RedHat\java-1.8.0-openjdk-1.8.0.504-1\bin\javaw.exe" (
     set "JAVA_EXE=C:\Program Files\RedHat\java-1.8.0-openjdk-1.8.0.504-1\bin\javaw.exe"
 ) else (

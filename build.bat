@@ -1,5 +1,7 @@
 @echo off
 setlocal
+cd /d "%~dp0"
+
 echo Compiling ImageJ source files...
 javac -encoding utf-8 ij\ImageJ.java ij\plugin\*.java ij\plugin\filter\*.java ij\plugin\frame\*.java
 if %ERRORLEVEL% neq 0 (
