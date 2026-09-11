@@ -2,22 +2,216 @@ package ij.plugin;
 
 import java.awt.*;
 import java.io.*;
+import java.util.regex.*;
 import ij.*;
 import ij.io.*;
+import ij.process.*;
+import ij.measure.*;
 
-/** This plugin implements the File/Import/Raw command. */
+/** This plugin implements the File/Import/Raw command and provides automatic opening for formatted raw volume files. */
 public class Raw implements PlugIn {
 
 	private static String defaultDirectory = null;
 
 	public void run(String arg) {
+		if (arg!=null && !arg.trim().isEmpty()) {
+			ImagePlus imp = openAuto(arg);
+			if (imp!=null) {
+				imp.show();
+				return;
+			}
+		}
 		OpenDialog od = new OpenDialog("Open Raw...", arg);
 		String directory = od.getDirectory();
 		String fileName = od.getFileName();
 		if (fileName==null)
 			return;
+		ImagePlus imp = openAuto(directory + fileName);
+		if (imp!=null) {
+			imp.show();
+			return;
+		}
 		ImportDialog d = new ImportDialog(fileName, directory);
 		d.openImage();
+	}
+
+	/** Automatically parses raw dimensions from filename and checks with file size. */
+	public static FileInfo parseRawFileInfo(String path) {
+		if (path==null || path.trim().isEmpty())
+			return null;
+		File f = new File(path);
+		if (!f.exists() || !f.isFile())
+			return null;
+		long fileLength = f.length();
+		if (fileLength<=0)
+			return null;
+		String name = f.getName();
+
+		int bestW = 0, bestH = 0, bestD = 0;
+		int bestType = FileInfo.GRAY8;
+		long bestOffset = 0;
+		boolean found = false;
+
+		// 1. Try 3D dimensions, e.g. -1689-1689-701, 1689x1689x701, 1689_1689_701
+		Pattern p3d = Pattern.compile("(?<!\\d)(\\d{2,5})[-_xX](\\d{2,5})[-_xX](\\d{1,5})(?!\\d)");
+		Matcher m3d = p3d.matcher(name);
+		while (m3d.find()) {
+			try {
+				int w = Integer.parseInt(m3d.group(1));
+				int h = Integer.parseInt(m3d.group(2));
+				int d = Integer.parseInt(m3d.group(3));
+				if (w<=0 || h<=0 || d<=0) continue;
+				long voxels = (long)w * h * d;
+				if (fileLength == voxels) {
+					bestW = w; bestH = h; bestD = d; bestType = FileInfo.GRAY8; bestOffset = 0;
+					found = true; break;
+				} else if (fileLength == voxels * 2) {
+					bestW = w; bestH = h; bestD = d; bestType = FileInfo.GRAY16_UNSIGNED; bestOffset = 0;
+					found = true; break;
+				} else if (fileLength == voxels * 4) {
+					bestW = w; bestH = h; bestD = d; bestType = FileInfo.GRAY32_FLOAT; bestOffset = 0;
+					found = true; break;
+				} else if (fileLength == voxels * 3) {
+					bestW = w; bestH = h; bestD = d; bestType = FileInfo.RGB; bestOffset = 0;
+					found = true; break;
+				} else if (fileLength > voxels && (fileLength - voxels) <= 65536) {
+					bestW = w; bestH = h; bestD = d; bestType = FileInfo.GRAY8; bestOffset = fileLength - voxels;
+					found = true; break;
+				} else if (fileLength > voxels * 2 && (fileLength - voxels * 2) <= 65536) {
+					bestW = w; bestH = h; bestD = d; bestType = FileInfo.GRAY16_UNSIGNED; bestOffset = fileLength - voxels * 2;
+					found = true; break;
+				}
+			} catch (Exception ignored) {}
+		}
+
+		// 2. Try 2D dimensions, e.g. -1689-1689, 512x512
+		if (!found) {
+			Pattern p2d = Pattern.compile("(?<!\\d)(\\d{2,5})[-_xX](\\d{2,5})(?!\\d)");
+			Matcher m2d = p2d.matcher(name);
+			while (m2d.find()) {
+				try {
+					int w = Integer.parseInt(m2d.group(1));
+					int h = Integer.parseInt(m2d.group(2));
+					if (w<=0 || h<=0) continue;
+					long pixels = (long)w * h;
+					if (fileLength == pixels) {
+						bestW = w; bestH = h; bestD = 1; bestType = FileInfo.GRAY8; bestOffset = 0;
+						found = true; break;
+					} else if (fileLength == pixels * 2) {
+						bestW = w; bestH = h; bestD = 1; bestType = FileInfo.GRAY16_UNSIGNED; bestOffset = 0;
+						found = true; break;
+					} else if (fileLength == pixels * 4) {
+						bestW = w; bestH = h; bestD = 1; bestType = FileInfo.GRAY32_FLOAT; bestOffset = 0;
+						found = true; break;
+					} else if (fileLength == pixels * 3) {
+						bestW = w; bestH = h; bestD = 1; bestType = FileInfo.RGB; bestOffset = 0;
+						found = true; break;
+					} else if (fileLength % pixels == 0) {
+						long d = fileLength / pixels;
+						if (d > 1 && d <= 65536) {
+							bestW = w; bestH = h; bestD = (int)d; bestType = FileInfo.GRAY8; bestOffset = 0;
+							found = true; break;
+						}
+					} else if (fileLength % (pixels * 2) == 0) {
+						long d = fileLength / (pixels * 2);
+						if (d > 1 && d <= 65536) {
+							bestW = w; bestH = h; bestD = (int)d; bestType = FileInfo.GRAY16_UNSIGNED; bestOffset = 0;
+							found = true; break;
+						}
+					}
+				} catch (Exception ignored) {}
+			}
+		}
+
+		if (!found)
+			return null;
+
+		FileInfo fi = new FileInfo();
+		fi.fileFormat = FileInfo.RAW;
+		fi.fileName = name;
+		String parent = f.getParent();
+		if (parent!=null)
+			fi.directory = parent + File.separator;
+		fi.width = bestW;
+		fi.height = bestH;
+		fi.nImages = bestD;
+		fi.fileType = bestType;
+		if (bestOffset > 2147483647L)
+			fi.longOffset = bestOffset;
+		else
+			fi.offset = (int)bestOffset;
+
+		fi.intelByteOrder = !name.toLowerCase().contains("be.raw") && !name.toLowerCase().contains("big_endian");
+
+		// 3. Extract voxel size, e.g. -5um, _5um, -0.5um, -6mm
+		Pattern pUnit = Pattern.compile("[-_](\\d+(?:\\.\\d+)?)\\s*(um|µm|nm|mm|cm|m)\\b", Pattern.CASE_INSENSITIVE);
+		Matcher mUnit = pUnit.matcher(name);
+		if (mUnit.find()) {
+			try {
+				double vSize = Double.parseDouble(mUnit.group(1));
+				String unit = mUnit.group(2).toLowerCase();
+				if (unit.equals("um") || unit.equals("µm"))
+					unit = "µm";
+				fi.pixelWidth = vSize;
+				fi.pixelHeight = vSize;
+				fi.pixelDepth = vSize;
+				fi.unit = unit;
+			} catch (Exception ignored) {}
+		}
+
+		return fi;
+	}
+
+	/** Automatically opens a raw file if dimensions can be parsed from its name and match the file length. */
+	public static ImagePlus openAuto(String path) {
+		FileInfo fi = parseRawFileInfo(path);
+		if (fi==null)
+			return null;
+
+		long requiredBytes = (long)fi.width * fi.height * fi.nImages * fi.getBytesPerPixel();
+		Runtime rt = Runtime.getRuntime();
+		long maxMem = rt.maxMemory();
+		long freeMem = maxMem - rt.totalMemory() + rt.freeMemory();
+
+		ImagePlus imp = null;
+		if (requiredBytes > freeMem * 0.75) {
+			System.gc();
+			freeMem = maxMem - rt.totalMemory() + rt.freeMemory();
+		}
+
+		if (requiredBytes > freeMem * 0.85) {
+			IJ.showStatus("Opening large volume as Virtual Stack...");
+			new FileInfoVirtualStack(fi);
+			return WindowManager.getCurrentImage();
+		}
+
+		try {
+			FileOpener fo = new FileOpener(fi);
+			imp = fo.openImage();
+		} catch (OutOfMemoryError e) {
+			IJ.showStatus("Out of memory, switching to Virtual Stack...");
+			System.gc();
+			new FileInfoVirtualStack(fi);
+			return WindowManager.getCurrentImage();
+		}
+
+		if (imp!=null) {
+			if (fi.unit!=null && fi.pixelWidth>0) {
+				Calibration cal = imp.getCalibration();
+				cal.setUnit(fi.unit);
+				cal.pixelWidth = fi.pixelWidth;
+				cal.pixelHeight = fi.pixelHeight;
+				cal.pixelDepth = fi.pixelDepth;
+			}
+			int n = imp.getStackSize();
+			if (n>1) {
+				imp.setSlice(n/2);
+				ImageProcessor ip = imp.getProcessor();
+				ip.resetMinAndMax();
+				imp.setDisplayRange(ip.getMin(), ip.getMax());
+			}
+		}
+		return imp;
 	}
 
 	/** Opens the image at 'filePath' using the format specified by 'fi'. */

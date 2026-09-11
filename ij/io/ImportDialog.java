@@ -313,6 +313,19 @@ public class ImportDialog {
 	private void getDimensionsFromName(String name) {
 		if (name==null)
 			return;
+		FileInfo autoFi = ij.plugin.Raw.parseRawFileInfo(directory!=null ? directory+name : name);
+		if (autoFi!=null) {
+			width = autoFi.width;
+			height = autoFi.height;
+			nImages = autoFi.nImages;
+			offset = autoFi.offset>0 ? autoFi.offset : autoFi.longOffset;
+			intelByteOrder = autoFi.intelByteOrder;
+			if (autoFi.fileType==FileInfo.GRAY8) choiceSelection = 0;
+			else if (autoFi.fileType==FileInfo.GRAY16_UNSIGNED) choiceSelection = 2;
+			else if (autoFi.fileType==FileInfo.GRAY32_FLOAT) choiceSelection = 5;
+			else if (autoFi.fileType==FileInfo.RGB) choiceSelection = 7;
+			return;
+		}
 		if (!name.matches(".*[0-9]+x[0-9]+.*"))
 			return; // must have 'x' seperator
 		int lastUnderscore = name.lastIndexOf("_");

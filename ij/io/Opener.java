@@ -332,6 +332,9 @@ public class Opener {
 		this.fileType = getFileType(path);
 		if (IJ.debugMode) IJ.log("openImage: \""+types[this.fileType]+"\", "+path);
 		switch (this.fileType) {
+			case RAW:
+				imp = ij.plugin.Raw.openAuto(path);
+				if (imp!=null && imp.getWidth()!=0) return imp; else return null;
 			case TIFF:
 				imp = openTiff(directory, name);
 				return imp;
