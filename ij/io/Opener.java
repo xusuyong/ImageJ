@@ -31,7 +31,7 @@ public class Opener {
 		GIF=6,LUT=7,BMP=8,ZIP=9,JAVA_OR_TEXT=10,ROI=11,TEXT=12,PNG=13,
 		TIFF_AND_DICOM=14,CUSTOM=15, AVI=16, OJJ=17, TABLE=18, RAW=19; // don't forget to also update 'types'
 	public static final String[] types = {"unknown","tif","dcm","fits","pgm",
-		"jpg","gif","lut","bmp","zip","java/txt","roi","txt","png","t&d","custom","ojj","table","raw"};
+		"jpg","gif","lut","bmp","zip","java/txt","roi","txt","png","t&d","custom","avi","ojj","table","raw"};
 	private static String defaultDirectory = null;
 	private int fileType;
 	private boolean error;
@@ -1407,6 +1407,14 @@ ImagePlus openJpegOrGifUsingURL(String title, URL url) {
 		if (name.endsWith(".avi"))
 			return AVI;
 
+		// RAW
+		if (name.endsWith(".raw"))
+			return RAW;
+
+		// BMP ("BM")
+		if ((b0==66 && b1==77)||name.endsWith(".dib"))
+			return BMP;
+
 		// Text file
 		boolean isText = true;
 		for (int i=0; i<10; i++) {
@@ -1418,14 +1426,6 @@ ImagePlus openJpegOrGifUsingURL(String title, URL url) {
 		}
 		if (isText)
 		   return TEXT;
-
-		// BMP ("BM")
-		if ((b0==66 && b1==77)||name.endsWith(".dib"))
-			return BMP;
-				
-		// RAW
-		if (name.endsWith(".raw") && !Prefs.skipRawDialog)
-			return RAW;
 
 		return UNKNOWN;
 	}
