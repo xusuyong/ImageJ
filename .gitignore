@@ -5,6 +5,7 @@
 *.class
 /*.jar
 /build/
+/dist/
 /target/
 
 # Eclipse
