@@ -35,8 +35,17 @@ xcopy /E /I /Y "%TEMPLATE_DIR%\luts" "%DIST_DIR%\luts" >nul
 xcopy /E /I /Y "%TEMPLATE_DIR%\macros" "%DIST_DIR%\macros" >nul
 xcopy /E /I /Y "%TEMPLATE_DIR%\plugins" "%DIST_DIR%\plugins" >nul
 
-echo [3/4] Setting up ImageJ-CT.exe and launcher configuration...
-copy /Y "%TEMPLATE_DIR%\ImageJ.exe" "%DIST_DIR%\ImageJ-CT.exe" >nul
+echo [3/4] Building native Unicode launcher ImageJ-CT.exe...
+set "CSC_EXE=C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+if not exist "%CSC_EXE%" set "CSC_EXE=C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe"
+
+if exist "%CSC_EXE%" (
+    "%CSC_EXE%" /nologo /target:winexe /win32icon:"%~dp0ImageJ.ico" /out:"%DIST_DIR%\ImageJ-CT.exe" "%~dp0ImageJLauncher.cs"
+) else (
+    echo [WARNING] csc.exe not found, copying template executable...
+    copy /Y "%TEMPLATE_DIR%\ImageJ.exe" "%DIST_DIR%\ImageJ-CT.exe" >nul
+)
+
 if exist "%TEMPLATE_DIR%\ImageJ.cfg" (
     copy /Y "%TEMPLATE_DIR%\ImageJ.cfg" "%DIST_DIR%\ImageJ-CT.cfg" >nul
     copy /Y "%TEMPLATE_DIR%\ImageJ.cfg" "%DIST_DIR%\ImageJ.cfg" >nul
