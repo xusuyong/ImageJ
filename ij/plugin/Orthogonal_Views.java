@@ -57,7 +57,6 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 	private double lastMag = -1.0;
 	private Rectangle lastXySrc = new Rectangle(-1, -1, -1, -1);
 	private int lastXyDstW = -1, lastXyDstH = -1;
-	private int lastSlice = -1;
 	private int lastUpdateX = -1, lastUpdateY = -1;
 	private int lastXyX = Integer.MIN_VALUE, lastXyY = Integer.MIN_VALUE;
 	private int lastXyW = -1, lastXyH = -1;
@@ -537,10 +536,6 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 		int curW = xyWin.getWidth();
 		int curH = xyWin.getHeight();
 
-		if (lastXyX == loc.x && lastXyY == loc.y && lastXyW == curW && lastXyH == curH && !firstTime) {
-			return;
-		}
-
 		Insets xyInsets = xyWin.getInsets();
 		Insets yzInsets = yzWin.getInsets();
 
@@ -553,11 +548,17 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 		int xzY = loc.y + curH - yGap;
 
 		Point curYz = yzWin.getLocation();
+		Point curXz = xzWin.getLocation();
+
+		if (lastXyX == loc.x && lastXyY == loc.y && lastXyW == curW && lastXyH == curH
+				&& curYz.x == yzX && curYz.y == yzY && curXz.x == xzX && curXz.y == xzY && !firstTime) {
+			return;
+		}
+
 		if (curYz.x != yzX || curYz.y != yzY) {
 			yzWin.setLocation(yzX, yzY);
 		}
 
-		Point curXz = xzWin.getLocation();
 		if (curXz.x != xzX || curXz.y != xzY) {
 			xzWin.setLocation(xzX, xzY);
 		}
@@ -926,7 +927,6 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 		lastXySrc.setBounds(-1, -1, -1, -1);
 		lastXyDstW = -1;
 		lastXyDstH = -1;
-		lastSlice = -1;
 		lastUpdateX = -1;
 		lastUpdateY = -1;
 		lastXyX = Integer.MIN_VALUE;

@@ -209,6 +209,7 @@ public class Raw implements PlugIn {
 			}
 			int n = imp.getStackSize();
 			if (n>1) {
+				imp.setDimensions(1, n, 1);
 				imp.setSlice(n/2);
 				ImageProcessor ip = imp.getProcessor();
 				ip.resetMinAndMax();
