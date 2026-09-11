@@ -1,0 +1,19 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "java",
+            "name": "ImageJ",
+            "request": "launch",
+            "mainClass": "ij/ij.ImageJ",
+            "projectName": "ij"
+        },
+        {
+            "type": "java",
+            "name": "Launch ImageJ",
+            "request": "launch",
+            "mainClass": "ij.ImageJ",
+            "vmArgs": "-Xmx16g"
+        }
+    ]
+}
