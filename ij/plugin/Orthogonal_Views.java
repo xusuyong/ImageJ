@@ -57,6 +57,8 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 	private double lastMag = -1.0;
 	private Rectangle lastXySrc = new Rectangle(-1, -1, -1, -1);
 	private int lastXyDstW = -1, lastXyDstH = -1;
+	private int lastSlice = -1;
+	private ImageStack lastImageStack = null;
 	private int lastUpdateX = -1, lastUpdateY = -1;
 	private int lastXyX = Integer.MIN_VALUE, lastXyY = Integer.MIN_VALUE;
 	private int lastXyW = -1, lastXyH = -1;
@@ -868,7 +870,6 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 			xz_image.setOverlay(null);
 			ImageWindow win1 = xz_image.getWindow();
 			if (win1!=null) {
-				win1.removeComponentListener(this);
 				win1.removeWindowListener(this);
 				win1.removeMouseWheelListener(this);
 				ImageCanvas ic = win1.getCanvas();
@@ -887,7 +888,6 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 			yz_image.setOverlay(null);
 			ImageWindow win2 = yz_image.getWindow();
 			if (win2!=null) {
-				win2.removeComponentListener(this);
 				win2.removeWindowListener(this);
 				win2.removeMouseWheelListener(this);
 				ImageCanvas ic = win2.getCanvas();
@@ -921,12 +921,16 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 		}
 		instance = null;
 		previousID = imp.getID();
-		previousX = crossLoc.x;
-		previousY = crossLoc.y;
+		synchronized(this) {
+			previousX = crossLoc.x;
+			previousY = crossLoc.y;
+		}
 		lastMag = -1.0;
 		lastXySrc.setBounds(-1, -1, -1, -1);
 		lastXyDstW = -1;
 		lastXyDstH = -1;
+		lastSlice = -1;
+		lastImageStack = null;
 		lastUpdateX = -1;
 		lastUpdateY = -1;
 		lastXyX = Integer.MIN_VALUE;
@@ -1041,6 +1045,7 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 			return;
 		int width=imp.getWidth();
 		int height=imp.getHeight();
+		boolean stackRebuilt = false;
 		if (hyperstack) {
 			int mode = IJ.COMPOSITE;
 			if (imp.isComposite()) {
@@ -1056,8 +1061,15 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 			}
 		}
 		ImageStack is = imageStack;
-		if (is==null)
+		if (is==null) {
 			is = imageStack = getStack();
+			stackRebuilt = true;
+		}
+		if (is != lastImageStack || stackRebuilt) {
+			lastImageStack = is;
+			lastUpdateX = -1;
+			lastUpdateY = -1;
+		}
 		double arat=az/ax;
 		double brat=az/ay;
 		Point p;
@@ -1122,7 +1134,7 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 		drawCross(yz_image, p, path);
 		if (!done)
 			setOverlay(yz_image, path);
-		IJ.showStatus(imp.getLocationAsString(crossLoc.x, crossLoc.y));
+		IJ.showStatus(imp.getLocationAsString(x, y));
 	}
 
 	public void mouseMoved(MouseEvent e) {
@@ -1135,12 +1147,14 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 			dispose();
 		} else if (IJ.shiftKeyDown()) {
 			int width=imp.getWidth(), height=imp.getHeight();
-			switch (key) {
-				case KeyEvent.VK_LEFT: crossLoc.x--; if (crossLoc.x<0) crossLoc.x=0; break;
-				case KeyEvent.VK_RIGHT: crossLoc.x++; if (crossLoc.x>=width) crossLoc.x=width-1; break;
-				case KeyEvent.VK_UP: crossLoc.y--; if (crossLoc.y<0) crossLoc.y=0; break;
-				case KeyEvent.VK_DOWN: crossLoc.y++; if (crossLoc.y>=height) crossLoc.y=height-1; break;
-				default: return;
+			synchronized(this) {
+				switch (key) {
+					case KeyEvent.VK_LEFT: crossLoc.x--; if (crossLoc.x<0) crossLoc.x=0; break;
+					case KeyEvent.VK_RIGHT: crossLoc.x++; if (crossLoc.x>=width) crossLoc.x=width-1; break;
+					case KeyEvent.VK_UP: crossLoc.y--; if (crossLoc.y<0) crossLoc.y=0; break;
+					case KeyEvent.VK_DOWN: crossLoc.y++; if (crossLoc.y>=height) crossLoc.y=height-1; break;
+					default: return;
+				}
 			}
 			update();
 		}
@@ -1179,6 +1193,11 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 			} else if (newSlice != lastSlice) {
 				lastSlice = newSlice;
 				update();
+			} else {
+				// Pixel data or image state changed without slice/min/max change (e.g. paintbrush, fill, filter)
+				lastUpdateX = -1;
+				lastUpdateY = -1;
+				update();
 			}
 		}
 	}
@@ -1190,8 +1209,11 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 			if (cimp==imp || cimp==xz_image || cimp==yz_image) {
 				ImageCanvas ic = imp.getCanvas();
 				if (ic==null) return null;
-				int x = ic.screenX(crossLoc.x);
-				int y = ic.screenY(crossLoc.y);
+				int x, y;
+				synchronized(this) {
+					x = ic.screenX(crossLoc.x);
+					y = ic.screenY(crossLoc.y);
+				}
 				if (command.equals("In")) {
 					ic.zoomIn(x, y);
 					if (ic.getMagnification()<=1.0) imp.repaintWindow();
@@ -1276,8 +1298,11 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 			ImageCanvas xyIc = imp != null ? imp.getCanvas() : null;
 			if (xyIc != null) {
 				if (!fromMain) {
-					int x = xyIc.screenX(crossLoc.x);
-					int y = xyIc.screenY(crossLoc.y);
+					int x, y;
+					synchronized(this) {
+						x = xyIc.screenX(crossLoc.x);
+						y = xyIc.screenY(crossLoc.y);
+					}
 					if (rotation < 0)
 						xyIc.zoomIn(x, y);
 					else
@@ -1292,10 +1317,12 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 			return;
 		}
 
-		if (fromXZ) {
-			crossLoc.y += rotation;
-		} else if (fromYZ) {
-			crossLoc.x += rotation;
+		synchronized(this) {
+			if (fromXZ) {
+				crossLoc.y += rotation;
+			} else if (fromYZ) {
+				crossLoc.x += rotation;
+			}
 		}
 		update();
 	}
@@ -1373,14 +1400,18 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 
 	public int[] getCrossLoc() {
 		int[] loc = new int[3];
-		loc[0] = crossLoc.x;
-		loc[1] = crossLoc.y;
+		synchronized(this) {
+			loc[0] = crossLoc.x;
+			loc[1] = crossLoc.y;
+		}
 		loc[2] = imp.getSlice()-1;
 		return loc;
 	}
 	
 	public void setCrossLoc(int x, int y, int z) {
-		crossLoc.setLocation(x, y);
+		synchronized(this) {
+			crossLoc.setLocation(x, y);
+		}
 		int slice = z+1;
 		if (slice!=imp.getSlice()) {
 			if (hyperstack) {
