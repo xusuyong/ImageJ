@@ -224,6 +224,7 @@ public class ImportDialog {
 					ImageProcessor ip = imp.getProcessor();
 					ip.resetMinAndMax();
 					imp.setDisplayRange(ip.getMin(),ip.getMax());
+					IJ.run("Orthogonal Views");
 				}
 			} else
 				IJ.error("File>Import>Raw", "File not found: "+filePath);

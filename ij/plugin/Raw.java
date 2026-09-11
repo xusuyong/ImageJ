@@ -18,6 +18,8 @@ public class Raw implements PlugIn {
 			ImagePlus imp = openAuto(arg);
 			if (imp!=null) {
 				imp.show();
+				if (imp.getStackSize() > 1)
+					IJ.run("Orthogonal Views");
 				return;
 			}
 		}
@@ -29,6 +31,8 @@ public class Raw implements PlugIn {
 		ImagePlus imp = openAuto(directory + fileName);
 		if (imp!=null) {
 			imp.show();
+			if (imp.getStackSize() > 1)
+				IJ.run("Orthogonal Views");
 			return;
 		}
 		ImportDialog d = new ImportDialog(fileName, directory);

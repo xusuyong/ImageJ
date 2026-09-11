@@ -112,6 +112,8 @@ public class Opener {
 				openRGB48(imp);
 			else
 				imp.show(getLoadRate(start,imp));
+			if (this.fileType == RAW && imp.getStackSize() > 1)
+				IJ.run("Orthogonal Views");
 		} else {
 			switch (this.fileType) {
 				case LUT:
