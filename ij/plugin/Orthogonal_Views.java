@@ -19,7 +19,7 @@ import java.util.*;
  * @author Dimiter Prodanov
  */
 public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListener, KeyListener, ActionListener, 
-	ImageListener, WindowListener, AdjustmentListener, MouseWheelListener, FocusListener, CommandListener, Runnable {
+	ImageListener, WindowListener, AdjustmentListener, MouseWheelListener, FocusListener, CommandListener, Runnable, ComponentListener {
 
 	private ImageWindow win;
 	private ImagePlus imp;
@@ -53,6 +53,14 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 	private boolean initialized;
 	private boolean sliceSet;
 	private Thread thread;
+	private volatile boolean needsUpdate = false;
+	private double lastMag = -1.0;
+	private Rectangle lastXySrc = new Rectangle(-1, -1, -1, -1);
+	private int lastXyDstW = -1, lastXyDstH = -1;
+	private int lastSlice = -1;
+	private int lastUpdateX = -1, lastUpdateY = -1;
+	private int lastXyX = Integer.MIN_VALUE, lastXyY = Integer.MIN_VALUE;
+	private int lastXyW = -1, lastXyH = -1;
 	final static String CROSS = "|OV|";
 
 	 
@@ -123,6 +131,7 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 				fp1.setColorModel(cm);
 				fp2.setColorModel(cm);				
 			}
+			lastSlice = imp.getSlice();
 			thread = new Thread(this, "Orthogonal Views");
 			thread.start();
 			IJ.wait(100);
@@ -172,6 +181,17 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 		win.addWindowListener (this);  
 		win.addMouseWheelListener(this);
 		win.addFocusListener(this);
+		win.addComponentListener(this);
+		if (win != null) {
+			Component[] comps = win.getComponents();
+			for (int i=0; i<comps.length; i++) {
+				Component c = comps[i];
+				if (c instanceof Adjustable)
+					((Adjustable)c).addAdjustmentListener(this);
+				else if (c instanceof ScrollbarWithLabel)
+					((ScrollbarWithLabel)c).addAdjustmentListener(this);
+			}
+		}
 		ImagePlus.addImageListener(this);
 		Executer.addCommandListener(this);
 	}
@@ -210,143 +230,352 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 		xz_image.setIJMenuBar(false);
 	}
 
+	private void syncSideViewsZoomAndBounds() {
+		if (imp == null || xz_image == null || yz_image == null) return;
+		ImageWindow xyWin = imp.getWindow();
+		ImageWindow xzWin = xz_image.getWindow();
+		ImageWindow yzWin = yz_image.getWindow();
+		if (xyWin == null || xzWin == null || yzWin == null) return;
+		ImageCanvas xyIc = xyWin.getCanvas();
+		ImageCanvas xzIc = xzWin.getCanvas();
+		ImageCanvas yzIc = yzWin.getCanvas();
+		if (xyIc == null || xzIc == null || yzIc == null) return;
+		if (fp1 == null || fp2 == null) return;
+
+		double mag = xyIc.getMagnification();
+		Rectangle xySrc = xyIc.getSrcRect();
+		if (xySrc == null) return;
+		int z = imp.getSlice() - 1;
+
+		int xyW = xyIc.getWidth();
+		int xyH = xyIc.getHeight();
+
+		if (mag == lastMag && xyW == lastXyDstW && xyH == lastXyDstH && xySrc.equals(lastXySrc)) {
+			return;
+		}
+		lastMag = mag;
+		lastXySrc.setBounds(xySrc);
+		lastXyDstW = xyW;
+		lastXyDstH = xyH;
+
+		double arat = az / ax;
+		double brat = az / ay;
+		int zcoord = (int) Math.round(arat * z);
+		if (flipXZ)
+			zcoord = (int) Math.round(arat * (imp.getNSlices() - z));
+
+		Rectangle maxBounds = GUI.getMaxWindowBounds(xyWin);
+
+		// 1. Sync XZ (Bottom View)
+		int xzImgWidth = fp1.getWidth();
+		int xzImgHeight = fp1.getHeight();
+		int xzDstWidth = xyW;
+
+		Insets xzInsets = xzWin.getInsets();
+		int xzInsetV = xzInsets != null ? (xzInsets.top + xzInsets.bottom) : 39;
+		int maxAvailableHeight = maxBounds.y + maxBounds.height - (xyWin.getY() + xyWin.getHeight()) - xzInsetV - 15;
+		int xzTargetHeight = (int) Math.round(xzImgHeight * mag);
+		int xzDstHeight = Math.max(80, Math.min(xzTargetHeight, maxAvailableHeight));
+
+		Rectangle curXzSrc = xzIc.getSrcRect();
+		Rectangle xzSrc = new Rectangle();
+		xzSrc.x = xySrc.x;
+		xzSrc.width = xySrc.width;
+		if (xzDstHeight >= xzTargetHeight) {
+			xzSrc.y = 0;
+			xzSrc.height = xzImgHeight;
+			xzDstHeight = xzTargetHeight;
+		} else {
+			xzSrc.height = (int) Math.round(xzDstHeight / mag);
+			if (xzSrc.height < 1) xzSrc.height = 1;
+			if (xzSrc.height > xzImgHeight) xzSrc.height = xzImgHeight;
+			int curY = (curXzSrc != null && curXzSrc.height == xzSrc.height) ? curXzSrc.y : (zcoord - xzSrc.height / 2);
+			if (zcoord < curY || zcoord >= curY + xzSrc.height) {
+				curY = zcoord - xzSrc.height / 2;
+			}
+			if (curY < 0) curY = 0;
+			if (curY + xzSrc.height > xzImgHeight) curY = xzImgHeight - xzSrc.height;
+			xzSrc.y = curY;
+		}
+
+		boolean xzSrcChanged = curXzSrc == null || !curXzSrc.equals(xzSrc) || xzIc.getMagnification() != mag;
+		boolean xzSizeChanged = (xzIc.getWidth() != xzDstWidth || xzIc.getHeight() != xzDstHeight);
+		if (xzSizeChanged) {
+			xzIc.setSize(xzDstWidth, xzDstHeight);
+		}
+		if (xzSrcChanged) {
+			xzIc.setSourceRect(xzSrc);
+			xzIc.setMagnification(mag);
+		}
+		if (xzSizeChanged) {
+			xzWin.pack();
+		}
+
+		// 2. Sync YZ (Right View)
+		int yzImgWidth = fp2.getWidth();
+		int yzImgHeight = fp2.getHeight();
+		Insets yzInsets = yzWin.getInsets();
+
+		if (!rotateYZ) {
+			int yzDstHeight = xyH;
+			int yzInsetH = yzInsets != null ? (yzInsets.left + yzInsets.right) : 16;
+			int maxAvailableWidth = maxBounds.x + maxBounds.width - (xyWin.getX() + xyWin.getWidth()) - yzInsetH - 15;
+			int yzTargetWidth = (int) Math.round(yzImgWidth * mag);
+			int yzDstWidth = Math.max(80, Math.min(yzTargetWidth, maxAvailableWidth));
+
+			Rectangle curYzSrc = yzIc.getSrcRect();
+			Rectangle yzSrc = new Rectangle();
+			yzSrc.y = xySrc.y;
+			yzSrc.height = xySrc.height;
+			if (yzDstWidth >= yzTargetWidth) {
+				yzSrc.x = 0;
+				yzSrc.width = yzImgWidth;
+				yzDstWidth = yzTargetWidth;
+			} else {
+				yzSrc.width = (int) Math.round(yzDstWidth / mag);
+				if (yzSrc.width < 1) yzSrc.width = 1;
+				if (yzSrc.width > yzImgWidth) yzSrc.width = yzImgWidth;
+				int curX = (curYzSrc != null && curYzSrc.width == yzSrc.width) ? curYzSrc.x : (zcoord - yzSrc.width / 2);
+				if (zcoord < curX || zcoord >= curX + yzSrc.width) {
+					curX = zcoord - yzSrc.width / 2;
+				}
+				if (curX < 0) curX = 0;
+				if (curX + yzSrc.width > yzImgWidth) curX = yzImgWidth - yzSrc.width;
+				yzSrc.x = curX;
+			}
+
+			boolean yzSrcChanged = curYzSrc == null || !curYzSrc.equals(yzSrc) || yzIc.getMagnification() != mag;
+			boolean yzSizeChanged = (yzIc.getWidth() != yzDstWidth || yzIc.getHeight() != yzDstHeight);
+			if (yzSizeChanged) {
+				yzIc.setSize(yzDstWidth, yzDstHeight);
+			}
+			if (yzSrcChanged) {
+				yzIc.setSourceRect(yzSrc);
+				yzIc.setMagnification(mag);
+			}
+			if (yzSizeChanged) {
+				yzWin.pack();
+			}
+		} else {
+			int yzDstWidth = xyW;
+			int yzInsetV = yzInsets != null ? (yzInsets.top + yzInsets.bottom) : 39;
+			int maxAvailableHeightYZ = maxBounds.y + maxBounds.height - (xyWin.getY() + xyWin.getHeight()) - yzInsetV - 15;
+			int yzTargetHeight = (int) Math.round(yzImgHeight * mag);
+			int yzDstHeight = Math.max(80, Math.min(yzTargetHeight, maxAvailableHeightYZ));
+
+			Rectangle curYzSrc = yzIc.getSrcRect();
+			Rectangle yzSrc = new Rectangle();
+			yzSrc.x = xySrc.y;
+			yzSrc.width = xySrc.height;
+			if (yzDstHeight >= yzTargetHeight) {
+				yzSrc.y = 0;
+				yzSrc.height = yzImgHeight;
+				yzDstHeight = yzTargetHeight;
+			} else {
+				yzSrc.height = (int) Math.round(yzDstHeight / mag);
+				if (yzSrc.height < 1) yzSrc.height = 1;
+				if (yzSrc.height > yzImgHeight) yzSrc.height = yzImgHeight;
+				int curY = (curYzSrc != null && curYzSrc.height == yzSrc.height) ? curYzSrc.y : (zcoord - yzSrc.height / 2);
+				if (zcoord < curY || zcoord >= curY + yzSrc.height) {
+					curY = zcoord - yzSrc.height / 2;
+				}
+				if (curY < 0) curY = 0;
+				if (curY + yzSrc.height > yzImgHeight) curY = yzImgHeight - yzSrc.height;
+				yzSrc.y = curY;
+			}
+
+			boolean yzSrcChanged = curYzSrc == null || !curYzSrc.equals(yzSrc) || yzIc.getMagnification() != mag;
+			boolean yzSizeChanged = (yzIc.getWidth() != yzDstWidth || yzIc.getHeight() != yzDstHeight);
+			if (yzSizeChanged) {
+				yzIc.setSize(yzDstWidth, yzDstHeight);
+			}
+			if (yzSrcChanged) {
+				yzIc.setSourceRect(yzSrc);
+				yzIc.setMagnification(mag);
+			}
+			if (yzSizeChanged) {
+				yzWin.pack();
+			}
+		}
+	}
+
 	private void updateMagnification(int x, int y) {
-        double magnification= win.getCanvas().getMagnification();
-        int z = imp.getSlice()-1;
-        ImageWindow xz_win = xz_image.getWindow();
-        if (xz_win==null) return;
-        ImageCanvas xz_ic = xz_win.getCanvas();
-        double xz_mag = xz_ic.getMagnification();
-        double arat = az/ax;
-		int zcoord=(int)(arat*z);
-		if (flipXZ) zcoord=(int)(arat*(imp.getNSlices()-z));
-        while (xz_mag<magnification) {
-        	xz_ic.zoomIn(xz_ic.screenX(x), xz_ic.screenY(zcoord));
-        	xz_mag = xz_ic.getMagnification();
-        }
-        while (xz_mag>magnification) {
-        	xz_ic.zoomOut(xz_ic.screenX(x), xz_ic.screenY(zcoord));
-        	xz_mag = xz_ic.getMagnification();
-        }
-        ImageWindow yz_win = yz_image.getWindow();
-        if (yz_win==null) return;
-        ImageCanvas yz_ic = yz_win.getCanvas();
-        double yz_mag = yz_ic.getMagnification();
-		zcoord = (int)(arat*z);
-        while (yz_mag<magnification) {
-        	yz_ic.zoomIn(yz_ic.screenX(zcoord), yz_ic.screenY(y));
-        	yz_mag = yz_ic.getMagnification();
-        }
-        while (yz_mag>magnification) {
-        	yz_ic.zoomOut(yz_ic.screenX(zcoord), yz_ic.screenY(y));
-        	yz_mag = yz_ic.getMagnification();
-        }
+		syncSideViewsZoomAndBounds();
 	}
 	
 	void updateViews(Point p, ImageStack is) {
 		if (fp1==null) return;
-		updateXZView(p,is);
-		
-		double arat=az/ax;
-		int width2 = fp1.getWidth();
-		int height2 = (int)Math.round(fp1.getHeight()*az);
-		if (height2<1) height2=1;
-		if (width2!=fp1.getWidth()||height2!=fp1.getHeight()) {
-			fp1.setInterpolate(true);
-			ImageProcessor sfp1=fp1.resize(width2, height2);
-			if (!rgb) sfp1.setMinAndMax(min, max);
-			xz_image.setProcessor("XZ "+p.y, sfp1);
-		} else {
-			if (!rgb) fp1.setMinAndMax(min, max);
-	    	xz_image.setProcessor("XZ "+p.y, fp1);
+
+		boolean needUpdateXZ = (p.y != lastUpdateY || xz_image.getWindow() == null);
+		boolean needUpdateYZ = (p.x != lastUpdateX || yz_image.getWindow() == null);
+
+		if (needUpdateXZ) {
+			updateXZView(p, is);
+			int width2 = fp1.getWidth();
+			int height2 = (int) Math.round(fp1.getHeight() * az);
+			if (height2 < 1) height2 = 1;
+			ImageProcessor targetIp;
+			if (width2 != fp1.getWidth() || height2 != fp1.getHeight()) {
+				fp1.setInterpolate(true);
+				targetIp = fp1.resize(width2, height2);
+			} else {
+				targetIp = fp1;
+			}
+			if (!rgb) targetIp.setMinAndMax(min, max);
+
+			if (xz_image.getWindow() == null) {
+				xz_image.setProcessor("XZ", targetIp);
+			} else {
+				ImageProcessor cur = xz_image.getProcessor();
+				if (cur != targetIp) {
+					if (cur != null && cur.getWidth() == targetIp.getWidth() && cur.getHeight() == targetIp.getHeight()) {
+						cur.setPixels(targetIp.getPixels());
+						if (!rgb) cur.setMinAndMax(min, max);
+					} else {
+						xz_image.setProcessor("XZ", targetIp);
+					}
+				}
+				ImageCanvas ic = xz_image.getCanvas();
+				if (ic != null) ic.setImageUpdated();
+			}
+			lastUpdateY = p.y;
 		}
-			
-		if (rotateYZ)
-			updateYZView(p, is);
-		else
-			updateZYView(p, is);
-				
-		width2 = (int)Math.round(fp2.getWidth()*az);
-		if (width2<1) width2=1;
-		height2 = fp2.getHeight();
-		String title = "YZ ";
-		if (rotateYZ) {
-			width2 = fp2.getWidth();
-			height2 = (int)Math.round(fp2.getHeight()*az);
-			if (height2<1) height2=1;
-			title = "ZY ";
+
+		if (needUpdateYZ) {
+			if (rotateYZ)
+				updateYZView(p, is);
+			else
+				updateZYView(p, is);
+
+			int width2 = (int) Math.round(fp2.getWidth() * az);
+			if (width2 < 1) width2 = 1;
+			int height2 = fp2.getHeight();
+			String title = "YZ";
+			if (rotateYZ) {
+				width2 = fp2.getWidth();
+				height2 = (int) Math.round(fp2.getHeight() * az);
+				if (height2 < 1) height2 = 1;
+				title = "ZY";
+			}
+			ImageProcessor targetIp;
+			if (width2 != fp2.getWidth() || height2 != fp2.getHeight()) {
+				fp2.setInterpolate(true);
+				targetIp = fp2.resize(width2, height2);
+			} else {
+				targetIp = fp2;
+			}
+			if (!rgb) targetIp.setMinAndMax(min, max);
+
+			if (yz_image.getWindow() == null) {
+				yz_image.setProcessor(title, targetIp);
+			} else {
+				ImageProcessor cur = yz_image.getProcessor();
+				if (cur != targetIp) {
+					if (cur != null && cur.getWidth() == targetIp.getWidth() && cur.getHeight() == targetIp.getHeight()) {
+						cur.setPixels(targetIp.getPixels());
+						if (!rgb) cur.setMinAndMax(min, max);
+					} else {
+						yz_image.setProcessor(title, targetIp);
+					}
+				}
+				ImageCanvas ic = yz_image.getCanvas();
+				if (ic != null) ic.setImageUpdated();
+			}
+			lastUpdateX = p.x;
 		}
-		if (width2!=fp2.getWidth()||height2!=fp2.getHeight()) {
-			fp2.setInterpolate(true);
-			ImageProcessor sfp2=fp2.resize(width2, height2);
-			if (!rgb) sfp2.setMinAndMax(min, max);
-			yz_image.setProcessor(title+p.x, sfp2);
-		} else {
-			if (!rgb) fp2.setMinAndMax(min, max);
-			yz_image.setProcessor(title+p.x, fp2);
-		}
-		
-		calibrate();
-		if (yz_image.getWindow()==null) {
+
+		if (yz_image.getWindow() == null) {
+			calibrate();
 			yz_image.show();
+			ImageWindow yzWin = yz_image.getWindow();
+			if (yzWin != null) {
+				yzWin.removeMouseWheelListener(yzWin);
+				yzWin.addMouseWheelListener(this);
+				yzWin.addWindowListener(this);
+			}
 			ImageCanvas ic = yz_image.getCanvas();
 			ic.addKeyListener(this);
 			ic.addMouseListener(this);
 			ic.addMouseMotionListener(this);
+			ic.addMouseWheelListener(this);
 			ic.setCustomRoi(true);
 			yzID = yz_image.getID();
 		} else {
 			ImageCanvas ic = yz_image.getWindow().getCanvas();
 			ic.setCustomRoi(true);
 		}
-		if (xz_image.getWindow()==null) {
+		if (xz_image.getWindow() == null) {
+			calibrate();
 			xz_image.show();
+			ImageWindow xzWin = xz_image.getWindow();
+			if (xzWin != null) {
+				xzWin.removeMouseWheelListener(xzWin);
+				xzWin.addMouseWheelListener(this);
+				xzWin.addWindowListener(this);
+			}
 			ImageCanvas ic = xz_image.getCanvas();
 			ic.addKeyListener(this);
 			ic.addMouseListener(this);
 			ic.addMouseMotionListener(this);
+			ic.addMouseWheelListener(this);
 			ic.setCustomRoi(true);
 			xzID = xz_image.getID();
 		} else {
 			ImageCanvas ic = xz_image.getWindow().getCanvas();
 			ic.setCustomRoi(true);
 		}
-		 
 	}
-	
+
 	void arrangeWindows(boolean sticky) {
-		ImageWindow xyWin = imp.getWindow();
-		if (xyWin==null) return;
+		ImageWindow xyWin = imp != null ? imp.getWindow() : null;
+		if (xyWin == null) return;
+		ImageWindow yzWin = yz_image != null ? yz_image.getWindow() : null;
+		ImageWindow xzWin = xz_image != null ? xz_image.getWindow() : null;
+		if (yzWin == null || xzWin == null) return;
+
 		Point loc = xyWin.getLocation();
-		if ((xyX!=loc.x)||(xyY!=loc.y)) {
-			xyX =  loc.x;
-			xyY =  loc.y;
- 			ImageWindow yzWin =null;
- 			long start = System.currentTimeMillis();
- 			while (yzWin==null && (System.currentTimeMillis()-start)<=2500L) {
-				yzWin = yz_image.getWindow();
-				if (yzWin==null) IJ.wait(50);
+		int curW = xyWin.getWidth();
+		int curH = xyWin.getHeight();
+
+		if (lastXyX == loc.x && lastXyY == loc.y && lastXyW == curW && lastXyH == curH && !firstTime) {
+			return;
+		}
+
+		Insets xyInsets = xyWin.getInsets();
+		Insets yzInsets = yzWin.getInsets();
+
+		int xGap = IJ.isWindows() ? ((xyInsets != null ? xyInsets.right : 8) + (yzInsets != null ? yzInsets.left : 8)) : 0;
+		int yGap = IJ.isWindows() ? (xyInsets != null ? xyInsets.bottom : 8) : 0;
+
+		int yzX = loc.x + curW - xGap;
+		int yzY = loc.y;
+		int xzX = loc.x;
+		int xzY = loc.y + curH - yGap;
+
+		Point curYz = yzWin.getLocation();
+		if (curYz.x != yzX || curYz.y != yzY) {
+			yzWin.setLocation(yzX, yzY);
+		}
+
+		Point curXz = xzWin.getLocation();
+		if (curXz.x != xzX || curXz.y != xzY) {
+			xzWin.setLocation(xzX, xzY);
+		}
+
+		lastXyX = loc.x;
+		lastXyY = loc.y;
+		lastXyW = curW;
+		lastXyH = curH;
+
+		if (firstTime) {
+			xyWin.toFront();
+			if (!sliceSet && imp.getSlice() == 1) {
+				if (hyperstack)
+					imp.setPosition(imp.getChannel(), imp.getNSlices() / 2, imp.getFrame());
+				else
+					imp.setSlice(imp.getNSlices() / 2);
 			}
-			if (yzWin!=null)
- 				yzWin.setLocation(xyX+xyWin.getWidth(), xyY);
-			ImageWindow xzWin =null;
- 			start = System.currentTimeMillis();
- 			while (xzWin==null && (System.currentTimeMillis()-start)<=2500L) {
-				xzWin = xz_image.getWindow();
-				if (xzWin==null) IJ.wait(50);
-			}
-			if (xzWin!=null)
- 				xzWin.setLocation(xyX,xyY+xyWin.getHeight());
- 			if (firstTime) {
- 				imp.getWindow().toFront();
- 				if (!sliceSet && imp.getSlice()==1) {
-					if (hyperstack)
-						imp.setPosition(imp.getChannel(), imp.getNSlices()/2, imp.getFrame());
-					else
-						imp.setSlice(imp.getNSlices()/2);
- 				}
- 				firstTime = false;
- 			}
+			firstTime = false;
 		}
 	}
 	
@@ -411,7 +640,11 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 		int y=p.y;
 		// XZ
 		if (ip instanceof ShortProcessor) {
-			short[] newpix=new short[width*size];
+			short[] newpix = (short[]) fp1.getPixels();
+			if (newpix == null || newpix.length != width*size) {
+				newpix = new short[width*size];
+				fp1.setPixels(newpix);
+			}
 			for (int i=0; i<size; i++) { 
 				Object pixels=is.getPixels(i+1);
 				if (flipXZ)
@@ -419,12 +652,15 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 				else
 					System.arraycopy(pixels, width*y, newpix, width*i, width);
 			}
-			fp1.setPixels(newpix);
 			return;
 		}
 		
 		if (ip instanceof ByteProcessor) {
-			byte[] newpix=new byte[width*size];
+			byte[] newpix = (byte[]) fp1.getPixels();
+			if (newpix == null || newpix.length != width*size) {
+				newpix = new byte[width*size];
+				fp1.setPixels(newpix);
+			}
 			for (int i=0;i<size; i++) { 
 				Object pixels=is.getPixels(i+1);
 				if (flipXZ)
@@ -432,12 +668,15 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 				else
 					System.arraycopy(pixels, width*y, newpix, width*i, width);
 			}
-			fp1.setPixels(newpix);
 			return;
 		}
 		
 		if (ip instanceof FloatProcessor) {
-			float[] newpix=new float[width*size];
+			float[] newpix = (float[]) fp1.getPixels();
+			if (newpix == null || newpix.length != width*size) {
+				newpix = new float[width*size];
+				fp1.setPixels(newpix);
+			}
 			for (int i=0; i<size; i++) { 
 				Object pixels=is.getPixels(i+1);
 				if (flipXZ)
@@ -445,12 +684,15 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 				else
 					System.arraycopy(pixels, width*y, newpix, width*i, width);
 			}
-			fp1.setPixels(newpix);
 			return;
 		}
 		
 		if (ip instanceof ColorProcessor) {
-			int[] newpix=new int[width*size];
+			int[] newpix = (int[]) fp1.getPixels();
+			if (newpix == null || newpix.length != width*size) {
+				newpix = new int[width*size];
+				fp1.setPixels(newpix);
+			}
 			for (int i=0;i<size; i++) { 
 				Object pixels=is.getPixels(i+1);
 				if (flipXZ)
@@ -458,7 +700,6 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 				else
 					System.arraycopy(pixels, width*y, newpix, width*i, width);
 			}
-			fp1.setPixels(newpix);
 			return;
 		}
 		
@@ -472,43 +713,55 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 		int x=p.x;
 		
 		if (ip instanceof FloatProcessor) {
-			float[] newpix=new float[ds*height];
+			float[] newpix = (float[]) fp2.getPixels();
+			if (newpix == null || newpix.length != ds*height) {
+				newpix = new float[ds*height];
+				fp2.setPixels(newpix);
+			}
 			for (int i=0;i<ds; i++) { 
-				float[] pixels= (float[]) is.getPixels(i+1);//toFloatPixels(pixels);
+				float[] pixels= (float[]) is.getPixels(i+1);
 				for (int j=0;j<height;j++)
 					newpix[(ds-i-1)*height + j] = pixels[x + j* width];
 			}
-			fp2.setPixels(newpix);
 		}
 		
 		if (ip instanceof ByteProcessor) {
-			byte[] newpix=new byte[ds*height];
+			byte[] newpix = (byte[]) fp2.getPixels();
+			if (newpix == null || newpix.length != ds*height) {
+				newpix = new byte[ds*height];
+				fp2.setPixels(newpix);
+			}
 			for (int i=0;i<ds; i++) { 
-				byte[] pixels= (byte[]) is.getPixels(i+1);//toFloatPixels(pixels);
+				byte[] pixels= (byte[]) is.getPixels(i+1);
 				for (int j=0;j<height;j++)
 					newpix[(ds-i-1)*height + j] = pixels[x + j* width];
 			}
-			fp2.setPixels(newpix);
 		}
 		
 		if (ip instanceof ShortProcessor) {
-			short[] newpix=new short[ds*height];
+			short[] newpix = (short[]) fp2.getPixels();
+			if (newpix == null || newpix.length != ds*height) {
+				newpix = new short[ds*height];
+				fp2.setPixels(newpix);
+			}
 			for (int i=0;i<ds; i++) { 
-				short[] pixels= (short[]) is.getPixels(i+1);//toFloatPixels(pixels);
+				short[] pixels= (short[]) is.getPixels(i+1);
 				for (int j=0;j<height;j++)
 					newpix[(ds-i-1)*height + j] = pixels[x + j* width];
 			}
-			fp2.setPixels(newpix);
 		}
 		
 		if (ip instanceof ColorProcessor) {
-			int[] newpix=new int[ds*height];
+			int[] newpix = (int[]) fp2.getPixels();
+			if (newpix == null || newpix.length != ds*height) {
+				newpix = new int[ds*height];
+				fp2.setPixels(newpix);
+			}
 			for (int i=0;i<ds; i++) { 
-				int[] pixels= (int[]) is.getPixels(i+1);//toFloatPixels(pixels);
+				int[] pixels= (int[]) is.getPixels(i+1);
 				for (int j=0;j<height;j++)
 					newpix[(ds-i-1)*height + j] = pixels[x + j* width];
 			}
-			fp2.setPixels(newpix);
 		}
 		if (!flipXZ)
 			fp2.flipVertical();
@@ -523,43 +776,55 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 		int x=p.x;
 		
 		if (ip instanceof FloatProcessor) {
-			float[] newpix=new float[ds*height];
+			float[] newpix = (float[]) fp2.getPixels();
+			if (newpix == null || newpix.length != ds*height) {
+				newpix = new float[ds*height];
+				fp2.setPixels(newpix);
+			}
 			for (int i=0;i<ds; i++) { 
-				float[] pixels= (float[]) is.getPixels(i+1);//toFloatPixels(pixels);
+				float[] pixels= (float[]) is.getPixels(i+1);
 				for (int y=0;y<height;y++)
 					newpix[i + y*ds] = pixels[x + y* width];
 			}
-			fp2.setPixels(newpix);
 		}
 		
 		if (ip instanceof ByteProcessor) {
-			byte[] newpix=new byte[ds*height];
+			byte[] newpix = (byte[]) fp2.getPixels();
+			if (newpix == null || newpix.length != ds*height) {
+				newpix = new byte[ds*height];
+				fp2.setPixels(newpix);
+			}
 			for (int i=0;i<ds; i++) { 
-				byte[] pixels= (byte[]) is.getPixels(i+1);//toFloatPixels(pixels);
+				byte[] pixels= (byte[]) is.getPixels(i+1);
 				for (int y=0;y<height;y++)
 					newpix[i + y*ds] = pixels[x + y* width];
 			}
-			fp2.setPixels(newpix);
 		}
 		
 		if (ip instanceof ShortProcessor) {
-			short[] newpix=new short[ds*height];
+			short[] newpix = (short[]) fp2.getPixels();
+			if (newpix == null || newpix.length != ds*height) {
+				newpix = new short[ds*height];
+				fp2.setPixels(newpix);
+			}
 			for (int i=0;i<ds; i++) { 
-				short[] pixels= (short[]) is.getPixels(i+1);//toFloatPixels(pixels);
+				short[] pixels= (short[]) is.getPixels(i+1);
 				for (int y=0;y<height;y++)
 					newpix[i + y*ds] = pixels[x + y* width];
 			}
-			fp2.setPixels(newpix);
 		}
 		
 		if (ip instanceof ColorProcessor) {
-			int[] newpix=new int[ds*height];
+			int[] newpix = (int[]) fp2.getPixels();
+			if (newpix == null || newpix.length != ds*height) {
+				newpix = new int[ds*height];
+				fp2.setPixels(newpix);
+			}
 			for (int i=0;i<ds; i++) { 
-				int[] pixels= (int[]) is.getPixels(i+1);//toFloatPixels(pixels);
+				int[] pixels= (int[]) is.getPixels(i+1);
 				for (int y=0;y<height;y++)
 					newpix[i + y*ds] = pixels[x + y* width];
 			}
-			fp2.setPixels(newpix);
 		}
 		
 	}
@@ -598,44 +863,76 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 			canvas.removeKeyListener(this);
 			canvas.setCustomRoi(false);
 		}
-		xz_image.setOverlay(null);
-		ImageWindow win1 = xz_image.getWindow();
-		if (win1!=null) {
-			win1.removeMouseWheelListener(this);
-			ImageCanvas ic = win1.getCanvas();
-			if (ic!=null) {
-				ic.removeKeyListener(this);
-				ic.removeMouseListener(this);
-				ic.removeMouseMotionListener(this);
-				ic.setCustomRoi(false);
+		if (xz_image != null) {
+			xz_image.setOverlay(null);
+			ImageWindow win1 = xz_image.getWindow();
+			if (win1!=null) {
+				win1.removeComponentListener(this);
+				win1.removeWindowListener(this);
+				win1.removeMouseWheelListener(this);
+				ImageCanvas ic = win1.getCanvas();
+				if (ic!=null) {
+					ic.removeKeyListener(this);
+					ic.removeMouseListener(this);
+					ic.removeMouseMotionListener(this);
+					ic.removeMouseWheelListener(this);
+					ic.setCustomRoi(false);
+				}
 			}
+			xz_image.changes = false;
+			xz_image.close();
 		}
-		xz_image.changes = false;
-		xz_image.close();
-		yz_image.setOverlay(null);
-		ImageWindow win2 = yz_image.getWindow();
-		if (win2!=null) {
-			win2.removeMouseWheelListener(this);
-			ImageCanvas ic = win2.getCanvas();
-			if (ic!=null) {
-				ic.removeKeyListener(this);
-				ic.removeMouseListener(this);
-				ic.removeMouseMotionListener(this);
-				ic.setCustomRoi(false);
+		if (yz_image != null) {
+			yz_image.setOverlay(null);
+			ImageWindow win2 = yz_image.getWindow();
+			if (win2!=null) {
+				win2.removeComponentListener(this);
+				win2.removeWindowListener(this);
+				win2.removeMouseWheelListener(this);
+				ImageCanvas ic = win2.getCanvas();
+				if (ic!=null) {
+					ic.removeKeyListener(this);
+					ic.removeMouseListener(this);
+					ic.removeMouseMotionListener(this);
+					ic.removeMouseWheelListener(this);
+					ic.setCustomRoi(false);
+				}
 			}
+			yz_image.changes = false;
+			yz_image.close();
 		}
-		yz_image.changes = false;
-		yz_image.close();
 		ImagePlus.removeImageListener(this);
 		Executer.removeCommandListener(this);
-		win.removeWindowListener(this);
-		win.removeMouseWheelListener(this);
-		win.removeFocusListener(this);
-		win.setResizable(true);
+		if (win != null) {
+			Component[] comps = win.getComponents();
+			for (int i=0; i<comps.length; i++) {
+				Component c = comps[i];
+				if (c instanceof Adjustable)
+					((Adjustable)c).removeAdjustmentListener(this);
+				else if (c instanceof ScrollbarWithLabel)
+					((ScrollbarWithLabel)c).removeAdjustmentListener(this);
+			}
+			win.removeComponentListener(this);
+			win.removeWindowListener(this);
+			win.removeMouseWheelListener(this);
+			win.removeFocusListener(this);
+			win.setResizable(true);
+		}
 		instance = null;
 		previousID = imp.getID();
 		previousX = crossLoc.x;
 		previousY = crossLoc.y;
+		lastMag = -1.0;
+		lastXySrc.setBounds(-1, -1, -1, -1);
+		lastXyDstW = -1;
+		lastXyDstH = -1;
+		lastSlice = -1;
+		lastUpdateX = -1;
+		lastUpdateY = -1;
+		lastXyX = Integer.MIN_VALUE;
+		lastXyY = Integer.MIN_VALUE;
+		lastXyW = -1;
+		lastXyH = -1;
 		imageStack = null;
 	}
 	
@@ -657,32 +954,44 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 	public void mouseDragged(MouseEvent e) {
 		if (IJ.spaceBarDown())  // scrolling?
 			return;
-		if (e.getSource().equals(canvas)) {
-			crossLoc = canvas.getCursorLoc();
-		} else if (e.getSource().equals(xz_image.getCanvas())) {
-			crossLoc.x = xz_image.getCanvas().getCursorLoc().x;
-			int pos = xz_image.getCanvas().getCursorLoc().y;
-			int z = (int)Math.round(pos/az);
-			int slice = flipXZ?imp.getNSlices()-z:z+1;
-			if (hyperstack)
-				imp.setPosition(imp.getChannel(), slice, imp.getFrame());
-			else
-				imp.setSlice(slice);
-		} else if (e.getSource().equals(yz_image.getCanvas())) {
-			int pos;
-			if (rotateYZ) {
-				crossLoc.y = yz_image.getCanvas().getCursorLoc().x;
-				pos = yz_image.getCanvas().getCursorLoc().y;
-			} else {
-				crossLoc.y = yz_image.getCanvas().getCursorLoc().y;
-				pos = yz_image.getCanvas().getCursorLoc().x;
+		synchronized(this) {
+			if (e.getSource().equals(canvas)) {
+				crossLoc = canvas.getCursorLoc();
+			} else if (e.getSource().equals(xz_image.getCanvas())) {
+				crossLoc.x = xz_image.getCanvas().getCursorLoc().x;
+				int pos = xz_image.getCanvas().getCursorLoc().y;
+				int z = (int)Math.round(pos/az);
+				int slice = flipXZ?imp.getNSlices()-z:z+1;
+				if (slice != imp.getSlice()) {
+					if (hyperstack) {
+						imp.setPositionWithoutUpdate(imp.getChannel(), slice, imp.getFrame());
+						imp.updateAndDraw();
+					} else {
+						imp.setSliceWithoutUpdate(slice);
+						imp.updateAndDraw();
+					}
+				}
+			} else if (e.getSource().equals(yz_image.getCanvas())) {
+				int pos;
+				if (rotateYZ) {
+					crossLoc.y = yz_image.getCanvas().getCursorLoc().x;
+					pos = yz_image.getCanvas().getCursorLoc().y;
+				} else {
+					crossLoc.y = yz_image.getCanvas().getCursorLoc().y;
+					pos = yz_image.getCanvas().getCursorLoc().x;
+				}
+				int z = (int)Math.round(pos/az);
+				int slice = flipXZ?imp.getNSlices()-z:z+1;
+				if (slice != imp.getSlice()) {
+					if (hyperstack) {
+						imp.setPositionWithoutUpdate(imp.getChannel(), slice, imp.getFrame());
+						imp.updateAndDraw();
+					} else {
+						imp.setSliceWithoutUpdate(slice);
+						imp.updateAndDraw();
+					}
+				}
 			}
-			int z = (int)Math.round(pos/az);
-			int slice = flipXZ?imp.getNSlices()-z:z+1;
-			if (hyperstack)
-				imp.setPosition(imp.getChannel(), slice, imp.getFrame());
-			else
-				imp.setSlice(slice);
 		}
 		update();
 	}
@@ -723,6 +1032,7 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 	
 	/** Refresh the output windows. */
 	synchronized void update() {
+		needsUpdate = true;
 		notify();
 	}
 	
@@ -750,7 +1060,10 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 			is = imageStack = getStack();
 		double arat=az/ax;
 		double brat=az/ay;
-		Point p=crossLoc;
+		Point p;
+		synchronized(this) {
+			p = new Point(crossLoc.x, crossLoc.y);
+		}
 		if (p.y>=height) p.y=height-1;
 		if (p.x>=width) p.x=width-1;
 		if (p.x<0) p.x=0;
@@ -853,9 +1166,20 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 	public void imageUpdated(ImagePlus imp) {
 		if (imp==this.imp) {
 			ImageProcessor ip = imp.getProcessor();
-			min = ip.getMin();
-			max = ip.getMax();
-			update();
+			double newMin = ip.getMin();
+			double newMax = ip.getMax();
+			int newSlice = imp.getSlice();
+			if (newMin != min || newMax != max) {
+				min = newMin;
+				max = newMax;
+				lastUpdateX = -1;
+				lastUpdateY = -1;
+				lastSlice = newSlice;
+				update();
+			} else if (newSlice != lastSlice) {
+				lastSlice = newSlice;
+				update();
+			}
 		}
 	}
 
@@ -863,7 +1187,7 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 		if (command.equals("In")||command.equals("Out")) {
 			ImagePlus cimp = WindowManager.getCurrentImage();
 			if (cimp==null) return command;
-			if (cimp==imp) {
+			if (cimp==imp || cimp==xz_image || cimp==yz_image) {
 				ImageCanvas ic = imp.getCanvas();
 				if (ic==null) return null;
 				int x = ic.screenX(crossLoc.x);
@@ -875,12 +1199,10 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 					ic.zoomOut(x, y);
 					if (ic.getMagnification()<1.0) imp.repaintWindow();
 				}
-				xyX=crossLoc.x; xyY=crossLoc.y;
+				syncSideViewsZoomAndBounds();
+				arrangeWindows(sticky);
 				update();
 				return null;
-			} else if (cimp==xz_image || cimp==yz_image) {
-				syncZoom = false;
-				return command;
 			} else
 				return command;
 		} else if (command.equals("Flip Vertically")&& xz_image!=null) {
@@ -895,7 +1217,12 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 	}
 
 	public void windowActivated(WindowEvent e) {
-		 arrangeWindows(sticky);
+		ImageWindow xyWin = imp!=null ? imp.getWindow() : null;
+		ImageWindow yzWin = yz_image!=null ? yz_image.getWindow() : null;
+		ImageWindow xzWin = xz_image!=null ? xz_image.getWindow() : null;
+		if (xyWin==null || yzWin==null || xzWin==null) return;
+
+		arrangeWindows(sticky);
 	}
 
 	public void windowClosed(WindowEvent e) {
@@ -910,10 +1237,22 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 	}
 
 	public void windowDeiconified(WindowEvent e) {
-		 arrangeWindows(sticky);
+		if (e.getSource() == win) {
+			if (yz_image!=null && yz_image.getWindow()!=null)
+				yz_image.getWindow().setState(Frame.NORMAL);
+			if (xz_image!=null && xz_image.getWindow()!=null)
+				xz_image.getWindow().setState(Frame.NORMAL);
+		}
+		arrangeWindows(sticky);
 	}
 
 	public void windowIconified(WindowEvent e) {
+		if (e.getSource() == win) {
+			if (yz_image!=null && yz_image.getWindow()!=null)
+				yz_image.getWindow().setState(Frame.ICONIFIED);
+			if (xz_image!=null && xz_image.getWindow()!=null)
+				xz_image.getWindow().setState(Frame.ICONIFIED);
+		}
 	}
 
 	public void windowOpened(WindowEvent e) {
@@ -924,13 +1263,58 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 	}
 		
 	public void mouseWheelMoved(MouseWheelEvent e) {
-		if (e.getSource().equals(xz_image.getWindow())) {
-			crossLoc.y += e.getWheelRotation();
-		} else if (e.getSource().equals(yz_image.getWindow())) {
-			crossLoc.x += e.getWheelRotation();
+		boolean ctrl = (e.getModifiers() & Event.CTRL_MASK) != 0 || IJ.controlKeyDown();
+		int rotation = e.getWheelRotation();
+		if (rotation == 0) return;
+
+		Object src = e.getSource();
+		boolean fromMain = (src == win || (imp != null && src == imp.getCanvas()));
+		boolean fromXZ = (xz_image != null && (src == xz_image.getWindow() || src == xz_image.getCanvas()));
+		boolean fromYZ = (yz_image != null && (src == yz_image.getWindow() || src == yz_image.getCanvas()));
+
+		if (ctrl || IJ.shiftKeyDown()) {
+			ImageCanvas xyIc = imp != null ? imp.getCanvas() : null;
+			if (xyIc != null) {
+				if (!fromMain) {
+					int x = xyIc.screenX(crossLoc.x);
+					int y = xyIc.screenY(crossLoc.y);
+					if (rotation < 0)
+						xyIc.zoomIn(x, y);
+					else
+						xyIc.zoomOut(x, y);
+					if (xyIc.getMagnification() <= 1.0)
+						imp.repaintWindow();
+				}
+				syncSideViewsZoomAndBounds();
+				arrangeWindows(sticky);
+				update();
+			}
+			return;
+		}
+
+		if (fromXZ) {
+			crossLoc.y += rotation;
+		} else if (fromYZ) {
+			crossLoc.x += rotation;
 		}
 		update();
 	}
+
+	public void componentMoved(ComponentEvent e) {
+		if (e.getSource() == win) {
+			arrangeWindows(sticky);
+		}
+	}
+
+	public void componentResized(ComponentEvent e) {
+		if (e.getSource() == win) {
+			syncSideViewsZoomAndBounds();
+			arrangeWindows(sticky);
+		}
+	}
+
+	public void componentShown(ComponentEvent e) {}
+	public void componentHidden(ComponentEvent e) {}
 
 	public void focusGained(FocusEvent e) {
 		ImageCanvas ic = imp.getCanvas();
@@ -999,10 +1383,13 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 		crossLoc.setLocation(x, y);
 		int slice = z+1;
 		if (slice!=imp.getSlice()) {
-			if (hyperstack)
-				imp.setPosition(imp.getChannel(), slice, imp.getFrame());
-			else
-				imp.setSlice(slice);
+			if (hyperstack) {
+				imp.setPositionWithoutUpdate(imp.getChannel(), slice, imp.getFrame());
+				imp.updateAndDraw();
+			} else {
+				imp.setSliceWithoutUpdate(slice);
+				imp.updateAndDraw();
+			}
 			sliceSet = true;
 		}
 		while (!initialized) {
@@ -1022,8 +1409,11 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 	public void run() {
 		while (!done) {
 			synchronized(this) {
-				try {wait();}
-				catch(InterruptedException e) {}
+				while (!needsUpdate && !done) {
+					try {wait();}
+					catch(InterruptedException e) {}
+				}
+				needsUpdate = false;
 			}
 			if (!done)
 				exec();
