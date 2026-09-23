@@ -20,6 +20,8 @@ public class Raw implements PlugIn {
 				imp.show();
 				if (imp.getStackSize() > 1)
 					IJ.run("Orthogonal Views");
+				else if (imp.getWindow() != null)
+					WindowManager.toFront(imp.getWindow());
 				return;
 			}
 		}
@@ -33,6 +35,8 @@ public class Raw implements PlugIn {
 			imp.show();
 			if (imp.getStackSize() > 1)
 				IJ.run("Orthogonal Views");
+			else if (imp.getWindow() != null)
+				WindowManager.toFront(imp.getWindow());
 			return;
 		}
 		ImportDialog d = new ImportDialog(fileName, directory);

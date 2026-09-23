@@ -571,7 +571,9 @@ public class Orthogonal_Views implements PlugIn, MouseListener, MouseMotionListe
 		lastXyH = curH;
 
 		if (firstTime) {
-			xyWin.toFront();
+			if (yzWin != null) WindowManager.toFront(yzWin);
+			if (xzWin != null) WindowManager.toFront(xzWin);
+			WindowManager.toFront(xyWin);
 			if (!sliceSet && imp.getSlice() == 1) {
 				if (hyperstack)
 					imp.setPosition(imp.getChannel(), imp.getNSlices() / 2, imp.getFrame());

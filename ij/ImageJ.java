@@ -202,6 +202,7 @@ public class ImageJ extends Frame implements ActionListener,
 			pack();
 			setLocation(loc.x, loc.y);
 			setVisible(true);
+			WindowManager.toFront(this);
 			Dimension size = getSize();
 			if (size!=null) {
 				if (IJ.debugMode) IJ.log("size: "+size);

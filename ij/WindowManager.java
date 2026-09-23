@@ -634,14 +634,47 @@ public class WindowManager {
 		if (frame==null) return;
 		if (frame.getState()==Frame.ICONIFIED)
 			frame.setState(Frame.NORMAL);
-		frame.toFront();
+		bringToFront(frame);
 	}
 	
 	public static void toFront(Window window) {
 		if (window==null) return;
 		if (window instanceof Frame && ((Frame)window).getState()==Frame.ICONIFIED)
 			((Frame)window).setState(Frame.NORMAL);
-		window.toFront();
+		bringToFront(window);
+	}
+
+	private static void bringToFront(final Window window) {
+		if (window==null) return;
+		try {
+			final boolean wasAlwaysOnTop = (window instanceof Frame && Prefs.alwaysOnTop && window == IJ.getInstance());
+			window.setAlwaysOnTop(true);
+			window.toFront();
+			window.requestFocus();
+			if (!wasAlwaysOnTop) {
+				new Thread(new Runnable() {
+					public void run() {
+						try {
+							Thread.sleep(300);
+						} catch (InterruptedException ignored) {}
+						java.awt.EventQueue.invokeLater(new Runnable() {
+							public void run() {
+								try {
+									window.setAlwaysOnTop(false);
+									window.toFront();
+									window.requestFocus();
+								} catch (Exception ignored) {}
+							}
+						});
+					}
+				}).start();
+			}
+		} catch (Exception e) {
+			try {
+				window.toFront();
+				window.requestFocus();
+			} catch (Exception ignored) {}
+		}
 	}
 	    
 }

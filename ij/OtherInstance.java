@@ -46,8 +46,14 @@ public class OtherInstance {
 
 		public void sendArgument(String cmd) {
 			if (IJ.debugMode) IJ.log("SocketServer.sendArgument: \""+ cmd+"\"");
-			if (cmd.startsWith("open "))
+			if (cmd.startsWith("open ")) {
 				(new Opener()).openAndAddToRecent(cmd.substring(5));
+				ImagePlus imp = WindowManager.getCurrentImage();
+				if (imp!=null && imp.getWindow()!=null)
+					WindowManager.toFront(imp.getWindow());
+				else if (IJ.getInstance()!=null)
+					WindowManager.toFront(IJ.getInstance());
+			}
 			else if (cmd.startsWith("macro ")) {
 				String name = cmd.substring(6);
 				String name2 = name;

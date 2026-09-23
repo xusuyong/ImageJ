@@ -3,11 +3,17 @@ using System.IO;
 using System.Diagnostics;
 using System.Text;
 using System.Windows.Forms;
+using System.Runtime.InteropServices;
 
 namespace ImageJLauncher
 {
     static class Program
     {
+        [DllImport("user32.dll")]
+        static extern bool AllowSetForegroundWindow(int dwProcessId);
+
+        private const int ASFW_ANY = -1;
+
         [STAThread]
         static void Main(string[] args)
         {
@@ -72,7 +78,22 @@ namespace ImageJLauncher
                 psi.UseShellExecute = false;
                 psi.CreateNoWindow = true;
 
-                Process.Start(psi);
+                Process proc = Process.Start(psi);
+                if (proc != null)
+                {
+                    try
+                    {
+                        AllowSetForegroundWindow(proc.Id);
+                        AllowSetForegroundWindow(ASFW_ANY);
+                    }
+                    catch { }
+
+                    try
+                    {
+                        proc.WaitForInputIdle(2000);
+                    }
+                    catch { }
+                }
             }
             catch (Exception ex)
             {
