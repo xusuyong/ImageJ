@@ -16,25 +16,35 @@ if %ERRORLEVEL% neq 0 (
 
 :: 2. Target output directory
 set "DIST_DIR=%~dp0dist\ImageJ-CT"
-set "TEMPLATE_DIR=D:\xsy\othercode\ij154-win-java8\ImageJ"
+if not exist "%DIST_DIR%" mkdir "%DIST_DIR%"
 
-if not exist "%TEMPLATE_DIR%" (
-    echo [ERROR] Template ImageJ folder not found at: %TEMPLATE_DIR%
-    pause
-    exit /b 1
+:: 3. Check if runtime (JRE) already exists in dist
+if exist "%DIST_DIR%\jre" (
+    echo [1/4] Reusing existing JRE and base resources in %DIST_DIR%
+) else (
+    echo [1/4] JRE not found in dist, searching for template resources...
+    set "TEMPLATE_DIR="
+    if defined IMAGEJ_TEMPLATE if exist "!IMAGEJ_TEMPLATE!\jre" set "TEMPLATE_DIR=!IMAGEJ_TEMPLATE!"
+    if not defined TEMPLATE_DIR if exist "E:\software\ij154-win-java8\ImageJ\jre" set "TEMPLATE_DIR=E:\software\ij154-win-java8\ImageJ"
+    if not defined TEMPLATE_DIR if exist "E:\software\ij154-win-java8\jre" set "TEMPLATE_DIR=E:\software\ij154-win-java8"
+    if not defined TEMPLATE_DIR if exist "D:\xsy\othercode\ij154-win-java8\ImageJ\jre" set "TEMPLATE_DIR=D:\xsy\othercode\ij154-win-java8\ImageJ"
+    if not defined TEMPLATE_DIR if exist "%~dp0..\ij154-win-java8\ImageJ\jre" set "TEMPLATE_DIR=%~dp0..\ij154-win-java8\ImageJ"
+    if not defined TEMPLATE_DIR if exist "%~dp0..\ij154-win-java8\jre" set "TEMPLATE_DIR=%~dp0..\ij154-win-java8"
+
+    if defined TEMPLATE_DIR (
+        echo [INFO] Found template resources at: !TEMPLATE_DIR!
+        echo [2/4] Copying runtime and plugins from template...
+        if exist "!TEMPLATE_DIR!\jre" xcopy /E /I /Y "!TEMPLATE_DIR!\jre" "%DIST_DIR%\jre" >nul
+        if exist "!TEMPLATE_DIR!\luts" xcopy /E /I /Y "!TEMPLATE_DIR!\luts" "%DIST_DIR%\luts" >nul
+        if exist "!TEMPLATE_DIR!\macros" xcopy /E /I /Y "!TEMPLATE_DIR!\macros" "%DIST_DIR%\macros" >nul
+        if exist "!TEMPLATE_DIR!\plugins" xcopy /E /I /Y "!TEMPLATE_DIR!\plugins" "%DIST_DIR%\plugins" >nul
+    ) else (
+        echo [NOTE] No JRE template found. ImageJ-CT will run in lightweight mode - using system Java.
+        echo [TIP] To include bundled JRE, set IMAGEJ_TEMPLATE=path\to\ImageJ or place jre in dist\ImageJ-CT\jre
+    )
 )
 
-echo.
-echo [1/4] Creating distribution directory: %DIST_DIR%
-if exist "%DIST_DIR%" rmdir /s /q "%DIST_DIR%"
-mkdir "%DIST_DIR%"
-
-echo [2/4] Copying runtime and plugins from template...
-xcopy /E /I /Y "%TEMPLATE_DIR%\jre" "%DIST_DIR%\jre" >nul
-xcopy /E /I /Y "%TEMPLATE_DIR%\luts" "%DIST_DIR%\luts" >nul
-xcopy /E /I /Y "%TEMPLATE_DIR%\macros" "%DIST_DIR%\macros" >nul
-xcopy /E /I /Y "%TEMPLATE_DIR%\plugins" "%DIST_DIR%\plugins" >nul
-
+:: 4. Build native Unicode launcher ImageJ-CT.exe
 echo [3/4] Building native Unicode launcher ImageJ-CT.exe...
 set "CSC_EXE=C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
 if not exist "%CSC_EXE%" set "CSC_EXE=C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe"
@@ -42,21 +52,22 @@ if not exist "%CSC_EXE%" set "CSC_EXE=C:\Windows\Microsoft.NET\Framework\v4.0.30
 if exist "%CSC_EXE%" (
     "%CSC_EXE%" /nologo /target:winexe /win32icon:"%~dp0ImageJ.ico" /out:"%DIST_DIR%\ImageJ-CT.exe" "%~dp0ImageJLauncher.cs"
 ) else (
-    echo [WARNING] csc.exe not found, copying template executable...
-    copy /Y "%TEMPLATE_DIR%\ImageJ.exe" "%DIST_DIR%\ImageJ-CT.exe" >nul
+    echo [WARNING] csc.exe not found!
 )
 
-if exist "%TEMPLATE_DIR%\ImageJ.cfg" (
-    copy /Y "%TEMPLATE_DIR%\ImageJ.cfg" "%DIST_DIR%\ImageJ-CT.cfg" >nul
-    copy /Y "%TEMPLATE_DIR%\ImageJ.cfg" "%DIST_DIR%\ImageJ.cfg" >nul
+:: Configure launcher cfg
+if exist "%DIST_DIR%\jre\bin\javaw.exe" (
+    > "%DIST_DIR%\ImageJ-CT.cfg" echo .
+    >> "%DIST_DIR%\ImageJ-CT.cfg" echo jre\bin\javaw.exe
+    >> "%DIST_DIR%\ImageJ-CT.cfg" echo -Xmx8000m -cp ij.jar ij.ImageJ
 ) else (
-    (
-        echo .
-        echo jre\bin\javaw.exe
-        echo -Xmx8000m -cp ij.jar ij.ImageJ
-    ) > "%DIST_DIR%\ImageJ-CT.cfg"
+    > "%DIST_DIR%\ImageJ-CT.cfg" echo .
+    >> "%DIST_DIR%\ImageJ-CT.cfg" echo javaw.exe
+    >> "%DIST_DIR%\ImageJ-CT.cfg" echo -Xmx8000m -cp ij.jar ij.ImageJ
 )
+copy /Y "%DIST_DIR%\ImageJ-CT.cfg" "%DIST_DIR%\ImageJ.cfg" >nul
 
+:: 5. Install latest ij.jar
 echo [4/4] Installing customized ij.jar...
 copy /Y "%~dp0ij.jar" "%DIST_DIR%\ij.jar" >nul
 
@@ -73,7 +84,11 @@ echo   Location: %DIST_DIR%
 echo ========================================================
 echo   You can compress or copy the 'dist\ImageJ-CT' folder
 echo   and distribute it directly to end users.
-echo   Users can simply run ImageJ-CT.exe without installing Java!
+if exist "%DIST_DIR%\jre\bin\javaw.exe" (
+    echo   Users can simply run ImageJ-CT.exe without installing Java!
+) else (
+    echo   Notice: Lightweight package without JRE - requires Java on user PC.
+)
 echo ========================================================
 
 endlocal
